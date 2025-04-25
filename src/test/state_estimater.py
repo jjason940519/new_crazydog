@@ -115,7 +115,7 @@ class robotestimater(Node):
         self.num_motors = len(self.unitree_l.motors) + len(self.unitree_r.motors)
         self.unitree_motor_pos = np.zeros((self.num_motors, 1))
         self.unitree_motor_vel = np.zeros((self.num_motors, 1))
-        self.unitree_motor_state = np.zeros((self.num_motors, 2))
+        self.unitree_motor_state = np.zeros((self.num_motors, 3))
         self.unitree_cmd = np.zeros((self.num_motors, 5))
         self.scaled_cmd = np.zeros_like(self.unitree_cmd)
         self.unitree_motor_mode = queryMotorMode(MotorType.GO_M8010_6, MotorMode.FOC)
@@ -351,10 +351,20 @@ class robotestimater(Node):
         # 批量處理返回數據
         self.unitree_motor_pos = np.array([motor.data.q for motor in self.all_motors], dtype=np.float32)
         self.unitree_motor_vel = np.array([motor.data.dq for motor in self.all_motors], dtype=np.float32)
+        self.unitree_motor_torque = np.array([motor.data.tau for motor in self.all_motors], dtype=np.float32)
         
         scaled_positions = (self.unitree_motor_pos - self.motor_origin_pos) / self.scales
-        scaled_velocities = self.unitree_motor_vel / self.scales   
-        self.unitree_motor_state = np.stack([scaled_positions, scaled_velocities], axis=0)
+        scaled_velocities = self.unitree_motor_vel / self.scales
+        scaled_torque = self.unitree_motor_torque / self.scales  
+        self.unitree_motor_state = np.stack([scaled_positions, scaled_velocities, scaled_torque], axis=0)
+        
+    def get_joint_torque(self,motor_id):
+        
+        if motor_id not in self.motor_id_to_index:
+            print(f"Error: Motor ID {motor_id} not found.")
+            return False
+        idx = self.motor_id_to_index[motor_id]
+        return self.unitree_motor_state[2, idx]
         
     def get_joint_pos(self,motor_id):
         
@@ -370,7 +380,7 @@ class robotestimater(Node):
             print(f"Error: Motor ID {motor_id} not found.")
             return False
         idx = self.motor_id_to_index[motor_id]
-        return self.unitree_motor_state[0, idx]
+        return self.unitree_motor_state[1, idx]
 
 class unitree_communication(object):
     def __init__(self,device_name = '/dev/ttyUSB0'):

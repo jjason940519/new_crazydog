@@ -8,6 +8,7 @@ import yaml
 # import torch
 import os
 import pickle
+import matplotlib.pyplot as plt
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -19,6 +20,7 @@ class RobotState:
     EMERGENCY_STOP = "emergency_stop"  # 緊急停止
     ERROR = "error"                    # 錯誤狀態
     RLCONTROL = "RLcontrol"
+    TESTMOTOR = "testmotor"
     
 class robotcontroller:
     
@@ -38,6 +40,19 @@ class robotcontroller:
         self.inital_pos2 = 0.0
         self.degree_1 = 0.0
         self.degree_2 = 0.0
+        
+        #motor_test的部分
+        self.test_step = 0
+        self.test_running_time = 0.0
+        self.test_inital_pos1 = 0.0
+        self.test_inital_pos2 = 0.0
+        self.test_inital_pos3 = 0.0
+        self.test_inital_pos4 = 0.0
+        self.pos_list = []
+        self.pos_comm_list = []
+        self.torque_list = []
+        self.time_list = []
+        
         
         # cfg_path = os.path.join('./pt_dir', 'cfgs.pkl')
         # if os.path.exists(cfg_path):
@@ -102,6 +117,8 @@ class robotcontroller:
             self.handle_error()
         elif self.state == RobotState.RLCONTROL:
             self.handle_rlcontrol()
+        elif self.state == RobotState.TESTMOTOR:
+            self.test_motor()
         
     def handle_self_check(self):
         
@@ -110,14 +127,13 @@ class robotcontroller:
         process_time_2 = 3
         imu_test_degree = 30
         first_cheak_pos = 0.97
-        second_cheak_pos = first_cheak_pos + math.pi * (imu_test_degree / 180)
+        self.second_cheak_pos = first_cheak_pos + math.pi * (imu_test_degree / 180)
 
         if self.self_check_step == 0:
             self.estimator.unitree_sendrecv(free_joint_mode=True)
             if abs(self.estimator.get_joint_pos(1) - self.estimator.get_joint_pos(4)) <= 0.1:
                 self.inital_pos1 = self.estimator.get_joint_pos(motor_id=1)
                 self.inital_pos2 = self.estimator.get_joint_pos(motor_id=4)
-                print(self.inital_pos1, self.inital_pos2)
                 self.self_check_step = 1
             else:
                 print("unitree_init_check_fail")
@@ -134,15 +150,14 @@ class robotcontroller:
             if self.running_time >= process_time_1:
                 self.self_check_step = 2
                 self.degree_1, _dq = self.estimator.get_filter_pitch_orintation()
-                print(self.degree_1)
                 self.running_time = 0
 
         elif self.self_check_step == 2:
             self.running_time += dt
             phase = np.tanh(self.running_time / (process_time_2/3))
-            self.estimator.set_motor_cmd(motor_id=1, kp=3, kd=0.1, position=phase * second_cheak_pos + (1-phase)*first_cheak_pos)
+            self.estimator.set_motor_cmd(motor_id=1, kp=3, kd=0.1, position=phase * self.second_cheak_pos + (1-phase)*first_cheak_pos)
             self.estimator.set_motor_cmd(motor_id=2, kp=3, kd=0.1, position=self.estimator.get_joint_pos(motor_id=2))
-            self.estimator.set_motor_cmd(motor_id=4, kp=3, kd=0.1, position=phase * second_cheak_pos + (1-phase)*first_cheak_pos)
+            self.estimator.set_motor_cmd(motor_id=4, kp=3, kd=0.1, position=phase * self.second_cheak_pos + (1-phase)*first_cheak_pos)
             self.estimator.set_motor_cmd(motor_id=5, kp=3, kd=0.1, position=self.estimator.get_joint_pos(motor_id=5))
             self.estimator.unitree_sendrecv(free_joint_mode=False)
             if self.running_time >= process_time_2:
@@ -158,7 +173,87 @@ class robotcontroller:
                 self.self_check_step = 0  # 重置狀態
                 self.running_time = 0.0
             
+    def test_motor(self):
+        process_time_1 = 6
+        process_time_2 = 8
+        test_init_angle_knee = 0
+        test_init_angle_thigh = 0
+        test_angle_thigh_max = 1.5
+        dt = 0.01
+        if self.test_step == 0:
+            self.estimator.unitree_sendrecv(free_joint_mode=False)
+            self.test_inital_pos1 = self.estimator.get_joint_pos(motor_id=1)
+            self.test_inital_pos2 = self.estimator.get_joint_pos(motor_id=2)
+            self.test_step = 1
+        elif self.test_step == 1:
+            self.test_running_time += dt
+            phase = np.tanh(self.test_running_time / (process_time_1/3))
+            self.estimator.set_motor_cmd(motor_id=1, kp=3, kd=0.1, position=phase * test_init_angle_thigh + (1-phase)*self.test_inital_pos1)
+            self.estimator.set_motor_cmd(motor_id=2, kp=3, kd=0.1, position=phase * test_init_angle_knee + (1-phase)*self.test_inital_pos2)
+            self.estimator.unitree_sendrecv(free_joint_mode=False)
+            if self.test_running_time >= process_time_1:
+                self.test_running_time = 0
+                self.test_step = 2
+        elif self.test_step == 2:
+            self.test_running_time += dt
+            phase = np.tanh(self.test_running_time/ (process_time_2/3))
+            self.estimator.set_motor_cmd(motor_id=1, kp=3, kd=0.1, position=phase * test_angle_thigh_max + (1-phase)*test_init_angle_thigh)
+            self.estimator.unitree_sendrecv(free_joint_mode=False)
+            pos = self.estimator.get_joint_pos(motor_id=1)
+            torque = self.estimator.get_joint_torque(motor_id=1)
+            self.pos_comm_list.append(phase * test_angle_thigh_max + (1-phase)*test_init_angle_thigh)
+            self.torque_list.append(torque)
+            self.pos_list.append(pos)
+            self.time_list.append(self.test_running_time)
+            if self.test_running_time >= process_time_2:
+                self.test_step = 3
+        elif self.test_step == 3:
+            self.test_running_time += dt
+            phase = np.tanh((self.test_running_time - process_time_2) / (process_time_2/3))
+            self.estimator.set_motor_cmd(motor_id=1, kp=3, kd=0.1, position=phase * test_init_angle_thigh + (1-phase)*test_angle_thigh_max)
+            self.estimator.unitree_sendrecv(free_joint_mode=False)
+            pos = self.estimator.get_joint_pos(motor_id=1)
+            torque = self.estimator.get_joint_torque(motor_id=1)
+            self.pos_comm_list.append(phase * test_init_angle_thigh + (1-phase)*test_angle_thigh_max)
+            self.torque_list.append(torque)
+            self.pos_list.append(pos)
+            self.time_list.append(self.test_running_time)
+            if self.test_running_time >= process_time_2*2:
+                self.test_step = 4
+                
+        elif self.test_step == 4:
             
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+            # Subplot 1: Position vs. Time
+            ax1.plot(self.time_list, self.pos_comm_list, label="motor 1 commanded position", color="g", linestyle="--")
+            ax1.plot(self.time_list, self.pos_list, label='Motor 1 Position', color='b')
+            ax1.set_ylabel('Position (rad)')
+            ax1.set_title('Motor 1 Position and Torque vs. Time')
+            ax1.grid(True)
+            ax1.legend()
+
+            # Subplot 2: Torque vs. Time
+            ax2.plot(self.time_list, self.torque_list, label='Motor 1 Torque', color='r')
+            ax2.set_xlabel('Time (s)')
+            ax2.set_ylabel('Torque (N·m)')
+            ax2.grid(True)
+            ax2.legend()
+
+            # Adjust layout to prevent overlap
+            plt.tight_layout()
+
+            # Save the figure
+            plt.savefig('motor1_position_torque_plot.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            self.estimator.unitree_sendrecv(free_joint_mode = True)
+            self.pos_list = []
+            self.pos_comm_list = []
+            self.torque_list = []
+            self.time_list = []
+            self.test_step = 0
+            self.transition_to(RobotState.IDLE)
+                            
     def handle_locking_legs(self):
         pass
     
@@ -229,11 +324,15 @@ def main(args=None):
     def start_rlcontrol():
         robot.transition_to(RobotState.RLCONTROL)
         
+    def start_testmotor():
+        robot.transition_to(RobotState.TESTMOTOR)
+        
     command_dict = {
         "self_check": start_self_check,
         "lock": lock_legs,
         "e": emergency_stop,
-        "rlcontrol": start_rlcontrol
+        "rlcontrol": start_rlcontrol,
+        "test": start_testmotor
     }
     def update_loop():
         target_dt = 0.01  
